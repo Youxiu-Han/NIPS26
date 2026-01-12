@@ -1,0 +1,57 @@
+algorithm: textmatch
+save_dir: ./saved_models
+save_name: textmatch_car196_490_0
+resume: False
+overwrite: True
+use_tensorboard: True
+epoch: 50
+num_train_iter: 51200
+num_eval_iter: 1024
+num_labels: 490
+dataset: car196
+num_classes: 98
+seed: 0
+batch_size: 32
+eval_batch_size: 128
+T: 0.5
+p_cutoff: 0.95 
+q_cutoff: 0.5
+ulb_loss_ratio: 1.0
+uratio: 1
+da_len: 32
+ema_m: 0.999
+crop_ratio: 0.875
+img_size: 224
+optim: SGD
+lr: 0.002 #original 0.03, 0.002
+momentum: 0.9
+weight_decay: 0.0005 # original 0.0003, 0.0005
+layer_decay: 1.0
+amp: False
+clip: 0.0
+use_cat: True
+net: resnet18
+net_from_name: False
+data_dir: ./data
+train_sampler: RandomSampler
+num_workers: 1
+world_size: 1
+rank: 0
+multiprocessing_distributed: False
+dist_url: tcp://127.0.0.1:10055
+dist_backend: nccl
+gpu: 0
+
+#CoOP
+coop_backbone: ViT-B/16  #RN50
+coop_prec : fp16
+n_ctx: 16
+ctx_init: ""
+input_size: 224
+csc: False
+class_token_position: "end"
+
+# padding 
+v_prompt_size: 1
+learnable_ratio: 0.01
+dropout_rate: 0.25
