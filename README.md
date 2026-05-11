@@ -50,6 +50,4 @@ For a new run, you typically adjust `save_name`, `dataset`, `num_classes`, `num_
 - `semilearn/` — algorithms, datasets, training loop
 - `clip/` — CLIP-related code
 
-## Citation
 
-Official code release for the paper. Add BibTeX here once the paper is public.
