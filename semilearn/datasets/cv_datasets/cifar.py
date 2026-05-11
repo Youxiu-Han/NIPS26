@@ -18,7 +18,7 @@ std['cifar10'] = [0.229, 0.224, 0.225]
 std['cifar100'] = [x / 255 for x in [68.2, 65.4, 70.4]]
 
 
-def get_cifar_openset(args, alg, name, num_labels, num_classes, data_dir='./data', pure_unlabeled=False):
+def get_cifar_openset(args, alg, name, num_labels, num_classes, data_dir='./data'):
     name = name.split('_')[0]  # cifar10_openset -> cifar10
     data_dir = os.path.join(data_dir, name.lower())
     dset = getattr(torchvision.datasets, name.upper())
@@ -79,11 +79,6 @@ def get_cifar_openset(args, alg, name, num_labels, num_classes, data_dir='./data
         lb_targets = targets
 
     lb_dset = BasicDataset(alg, lb_data, lb_targets, num_classes, transform_weak, False, None, False)
-
-    if pure_unlabeled:
-        seen_indices = np.where(ulb_targets < num_classes)[0]
-        ulb_data = ulb_data[seen_indices]
-        ulb_targets = ulb_targets[seen_indices]
 
     ulb_dset = BasicDataset(alg, ulb_data, ulb_targets, num_all_classes, transform_weak, True, transform_strong, False)
 
