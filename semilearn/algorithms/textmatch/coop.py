@@ -313,7 +313,7 @@ class CustomCLIP(nn.Module):
         )
         self.class_cache = self.class_cache.to(clip_model.dtype)
       
-    def forward(self, image, embedded_feat, topk, labels=None, use_enhanced_text=False, update_cache=False):
+    def forward(self, image, topk, labels=None, use_enhanced_text=False, update_cache=False):
         logit_scale = self.logit_scale.exp()
 
         # 1. 获取文本特征
@@ -328,7 +328,7 @@ class CustomCLIP(nn.Module):
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
         
         # 3. 提取图像特征
-        image_features, token_features = self.image_encoder(image.type(self.dtype), embedded_feat)
+        image_features, token_features = self.image_encoder(image.type(self.dtype))
         
         # 4. Adapter
         if self.use_adapter: 
@@ -381,8 +381,15 @@ class CustomCLIP(nn.Module):
             tmep = token_features[i][max_token_idx[i]]
             token_selected.append(tmep)
         token_selected = torch.stack(token_selected, dim=0)  # [B, topk, 512]
+
+        # 9. 对齐并聚合 top-K patches -> ā_i（供 Model 1 / LMemory 使用）
+        if self.class_cache.use_feature_align:
+            aligned_features = self.class_cache.feature_align(token_selected)  # [B, topk, dim]
+        else:
+            aligned_features = token_selected
+        aligned_agg = F.normalize(aligned_features.mean(dim=1), dim=-1)  # [B, dim]
         
-        # 9. 更新cache（只在Model 1训练时，且只更新有标签样本！）
+        # 10. 更新cache（只在Model 1训练时，且只更新有标签样本；EMA写入保持detach）
         if update_cache and has_valid_labels:
             for i in range(batch_size):
                 if valid_mask[i]:  # 只更新有标签的样本！
@@ -390,8 +397,10 @@ class CustomCLIP(nn.Module):
                     # 传递该样本的top-k tokens给cache更新
                     self.class_cache.update(class_id, token_selected[i])
         
-        # 10. 计算logits
-        logits = logit_scale * img_norm_features @ text_features.t()
+        if not use_enhanced_text:
+            logits = logit_scale * aligned_agg @ text_features.t()
+        else:
+            logits = logit_scale * img_norm_features @ text_features.t()
         
         # 返回image_features（经过adapter处理）供对比学习使用
         return logits, max_token_idx, image_features
