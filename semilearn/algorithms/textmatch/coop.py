@@ -44,25 +44,16 @@ class ClassWiseCache(nn.Module):
         # 特征融合模块（拼接 -> 线性变换）
         self.fusion = nn.Linear(2 * feature_dim, feature_dim, bias=False)
     
-    def update(self, class_id, visual_features):
+    def update(self, class_id, aggregated):
         """
         更新指定类的cache
         Args:
             class_id: int, 类别ID
-            visual_features: [topk, dim], 该类样本的top-k patches
+            aggregated: [dim], 该样本top-k patches经对齐聚合并归一化后的记忆槽
         """
-        # 1. 对齐视觉特征到文本空间（可选，用于消融实验）
-        if self.use_feature_align:
-            aligned_features = self.feature_align(visual_features)  # [topk, dim]
-        else:
-            aligned_features = visual_features  # 直接使用原始特征
-        
-        # 2. 聚合该样本的top-k features
-        aggregated = aligned_features.mean(dim=0)  # [dim]
-        aggregated = F.normalize(aggregated, dim=-1)
-        
-        # 3. Momentum更新cache
+        # Momentum更新cache（EMA写入不反传）
         with torch.no_grad():
+            aggregated = aggregated.detach()
             if self.count[class_id] == 0:
                 # 第一次见到这个类，直接赋值
                 self.cache[class_id] = aggregated
@@ -382,21 +373,22 @@ class CustomCLIP(nn.Module):
             token_selected.append(tmep)
         token_selected = torch.stack(token_selected, dim=0)  # [B, topk, 512]
 
-        # 9. 对齐并聚合 top-K patches -> ā_i（供 Model 1 / LMemory 使用）
+        # 9. 对齐并聚合 top-K patches 
         if self.class_cache.use_feature_align:
             aligned_features = self.class_cache.feature_align(token_selected)  # [B, topk, dim]
         else:
             aligned_features = token_selected
         aligned_agg = F.normalize(aligned_features.mean(dim=1), dim=-1)  # [B, dim]
         
-        # 10. 更新cache（EMA写入保持detach ）
+        # 10. 更新cache
         if update_cache and has_valid_labels:
             for i in range(batch_size):
                 if valid_mask[i]:  # 只更新有标签的样本！
                     class_id = labels[i].item()
-                    # 传递该样本的top-k tokens给cache更新
-                    self.class_cache.update(class_id, token_selected[i])
+                    # 复用已对齐聚合的记忆槽，避免重复计算feature_align
+                    self.class_cache.update(class_id, aligned_agg[i])
         
+        # 11. 计算logits
         if not use_enhanced_text:
             logits = logit_scale * aligned_agg @ text_features.t()
         else:
