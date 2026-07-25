@@ -389,7 +389,7 @@ class CustomCLIP(nn.Module):
             aligned_features = token_selected
         aligned_agg = F.normalize(aligned_features.mean(dim=1), dim=-1)  # [B, dim]
         
-        # 10. 更新cache（EMA写入保持detach）
+        # 10. 更新cache（EMA写入保持detach ）
         if update_cache and has_valid_labels:
             for i in range(batch_size):
                 if valid_mask[i]:  # 只更新有标签的样本！
