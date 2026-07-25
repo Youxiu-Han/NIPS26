@@ -103,10 +103,10 @@ class TextMatchNet(nn.Module):
         self.scaler = GradScaler() if args.coop_prec == "amp" else None
         self.topk = args.topk_patches  # top-k patch token选择
         
-    def forward(self, x, local, labels=None, use_enhanced_text=False, update_cache=False, **kwargs):
+    def forward(self, x, labels=None, use_enhanced_text=False, update_cache=False, **kwargs):
 
         logits, token_index, image_features = self.coop_model(
-            x, local, self.topk, 
+            x, self.topk, 
             labels=labels,
             use_enhanced_text=use_enhanced_text,
             update_cache=update_cache
@@ -263,7 +263,7 @@ class TextMatch(AlgorithmBase):
         使用 InfoNCE 风格的对比损失，让 image 更接近正确的 cache-enhanced text，
         同时远离语义冲突的 text。
         
-        关键：text特征做detach，只训练img_adapter
+        关键：text特征和cache做detach，梯度只回传到img_adapter和fusion（θh）
         """
         B, D = image_features.shape
         num_classes = self.num_classes
@@ -271,48 +271,48 @@ class TextMatch(AlgorithmBase):
         # 确保数据类型一致
         cache_dtype = model.coop_model.class_cache.cache.dtype
         image_features = image_features.to(cache_dtype)
-        
-        # 用 torch.no_grad() 包裹text特征的构造过程
+       
         with torch.no_grad():
             # 1. 获取原始text特征 [C, D]
             prompts, _ = model.coop_model.prompt_learner()
             text_features = model.coop_model.text_encoder(prompts, model.coop_model.tokenized_prompts)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             
-            # 2. 获取cache和融合模块
+            # 2. 获取cache
             cache = model.coop_model.class_cache.cache  # [C, D]
-            fusion = model.coop_model.class_cache.fusion
-            alpha = model.coop_model.class_cache.alpha
+        
+        fusion = model.coop_model.class_cache.fusion
+        alpha = model.coop_model.class_cache.alpha
+        
+        # 3. 为每个样本构造正确的text和冲突的text
+        correct_text_features = []
+        conflict_text_features = []
+        
+        for i in range(B):
+            y_i = labels[i].item()
+            text_y = text_features[y_i]  # [D]
+            cache_y = cache[y_i]  # [D]
             
-            # 3. 为每个样本构造正确的text和冲突的text
-            correct_text_features = []
-            conflict_text_features = []
+            # 正确的text：text[y] + cache[y]
+            concat_correct = torch.cat([text_y, cache_y], dim=-1)
+            fused_correct = fusion(concat_correct.unsqueeze(0)).squeeze(0)
+            correct_text = alpha * fused_correct + text_y
+            correct_text = correct_text / correct_text.norm(dim=-1, keepdim=True)
+            correct_text_features.append(correct_text)
             
-            for i in range(B):
-                y_i = labels[i].item()
-                text_y = text_features[y_i]  # [D]
-                cache_y = cache[y_i]  # [D]
-                
-                # 正确的text：text[y] + cache[y]
-                concat_correct = torch.cat([text_y, cache_y], dim=-1)
-                fused_correct = fusion(concat_correct.unsqueeze(0)).squeeze(0)
-                correct_text = alpha * fused_correct + text_y
-                correct_text = correct_text / correct_text.norm(dim=-1, keepdim=True)
-                correct_text_features.append(correct_text)
-                
-                # 冲突的text：text[y] + cache[d]
-                other_classes = [c for c in range(num_classes) if c != y_i]
-                conflict_class = random.choice(other_classes)
-                cache_d = cache[conflict_class]
-                
-                concat_conflict = torch.cat([text_y, cache_d], dim=-1)
-                fused_conflict = fusion(concat_conflict.unsqueeze(0)).squeeze(0)
-                conflict_text = alpha * fused_conflict + text_y
-                conflict_text = conflict_text / conflict_text.norm(dim=-1, keepdim=True)
-                conflict_text_features.append(conflict_text)
+            # 冲突的text：text[y] + cache[d]
+            other_classes = [c for c in range(num_classes) if c != y_i]
+            conflict_class = random.choice(other_classes)
+            cache_d = cache[conflict_class]
             
-            correct_text_features = torch.stack(correct_text_features, dim=0)  # [B, D]
-            conflict_text_features = torch.stack(conflict_text_features, dim=0)  # [B, D]
+            concat_conflict = torch.cat([text_y, cache_d], dim=-1)
+            fused_conflict = fusion(concat_conflict.unsqueeze(0)).squeeze(0)
+            conflict_text = alpha * fused_conflict + text_y
+            conflict_text = conflict_text / conflict_text.norm(dim=-1, keepdim=True)
+            conflict_text_features.append(conflict_text)
+        
+        correct_text_features = torch.stack(correct_text_features, dim=0)  # [B, D]
+        conflict_text_features = torch.stack(conflict_text_features, dim=0)  # [B, D]
         
         # 4. 计算相似度
         image_features_norm = F.normalize(image_features.float(), dim=-1)
@@ -377,7 +377,7 @@ class TextMatch(AlgorithmBase):
                     with torch.no_grad():
                         # 只对无标签weak augmentation部分做预测
                         ulb_w_inputs = x_ulb_w
-                        temp_outputs = self.model_1(ulb_w_inputs, None, labels=None,
+                        temp_outputs = self.model_1(ulb_w_inputs, labels=None,
                                                     use_enhanced_text=False, update_cache=False)
                         probs_ulb = F.softmax(temp_outputs['logits'], dim=-1)
                         max_probs, pseudo_labels = probs_ulb.max(dim=-1)
