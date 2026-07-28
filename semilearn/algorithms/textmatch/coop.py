@@ -373,7 +373,7 @@ class CustomCLIP(nn.Module):
             token_selected.append(tmep)
         token_selected = torch.stack(token_selected, dim=0)  # [B, topk, 512]
 
-        # 9. 对齐并聚合 top-K patches 
+        # 9. 对齐并聚合 top-K patches
         if self.class_cache.use_feature_align:
             aligned_features = self.class_cache.feature_align(token_selected)  # [B, topk, dim]
         else:
@@ -385,7 +385,6 @@ class CustomCLIP(nn.Module):
             for i in range(batch_size):
                 if valid_mask[i]:  # 只更新有标签的样本！
                     class_id = labels[i].item()
-                    # 复用已对齐聚合的记忆槽，避免重复计算feature_align
                     self.class_cache.update(class_id, aligned_agg[i])
         
         # 11. 计算logits
@@ -394,5 +393,4 @@ class CustomCLIP(nn.Module):
         else:
             logits = logit_scale * img_norm_features @ text_features.t()
         
-        # 返回image_features（经过adapter处理）供对比学习使用
-        return logits, max_token_idx, image_features
+        return logits, max_token_idx, image_features, aligned_agg

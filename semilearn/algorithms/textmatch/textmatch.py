@@ -105,7 +105,7 @@ class TextMatchNet(nn.Module):
         
     def forward(self, x, labels=None, use_enhanced_text=False, update_cache=False, **kwargs):
 
-        logits, token_index, image_features = self.coop_model(
+        logits, token_index, image_features, aligned_features = self.coop_model(
             x, self.topk, 
             labels=labels,
             use_enhanced_text=use_enhanced_text,
@@ -115,7 +115,8 @@ class TextMatchNet(nn.Module):
         return_dict = {
             'logits': logits, 
             'token_index': token_index,
-            'image_features': image_features
+            'image_features': image_features,
+            'aligned_features': aligned_features,
         }
         return return_dict
 
@@ -271,7 +272,8 @@ class TextMatch(AlgorithmBase):
         # 确保数据类型一致
         cache_dtype = model.coop_model.class_cache.cache.dtype
         image_features = image_features.to(cache_dtype)
-       
+        
+        # 只对text特征和cache做detach，fusion保留梯度（LPC需要优化θh）
         with torch.no_grad():
             # 1. 获取原始text特征 [C, D]
             prompts, _ = model.coop_model.prompt_learner()
@@ -445,39 +447,30 @@ class TextMatch(AlgorithmBase):
             ui_loss_2 = consistency_loss(logits_x_ulb_s_2, targets_p_2, 'ce', mask=p_mask_2)
 
             # ===== 监督对比学习损失（SupCon Loss）=====
-            # 不仅用有标签数据，还用高置信度无标签样本扩充对比学习样本量
             if self.use_supcon:
-                # 1. 获取有标签数据的image_features
-                image_features_lb_1 = outputs_1['image_features'][:num_lb]
+                image_features_lb_1 = outputs_1['aligned_features'][:num_lb]
                 image_features_lb_2 = outputs_2['image_features'][:num_lb]
                 
-                # 2. 获取无标签weak数据的image_features和高置信度伪标签
-                image_features_ulb_w_1 = outputs_1['image_features'][num_lb:num_lb+num_ulb]
+                image_features_ulb_w_1 = outputs_1['aligned_features'][num_lb:num_lb+num_ulb]
                 image_features_ulb_w_2 = outputs_2['image_features'][num_lb:num_lb+num_ulb]
                 
-                # 使用已经计算好的伪标签和mask
                 with torch.no_grad():
                     pseudo_labels_1 = targets_p_1.argmax(dim=-1)
                     pseudo_labels_2 = targets_p_2.argmax(dim=-1)
                 
-                # 3. 合并有标签 + 高置信度无标签样本
-                # 注意：p_mask_* 可能是float tensor，需要转成bool索引
                 p_mask_1 = p_mask_1.bool()
                 p_mask_2 = p_mask_2.bool()
 
-                # Model 1: 有标签 + 高置信度无标签
                 high_conf_features_1 = image_features_ulb_w_1[p_mask_1]
                 high_conf_labels_1 = pseudo_labels_1[p_mask_1]
                 combined_features_1 = torch.cat([image_features_lb_1, high_conf_features_1], dim=0)
                 combined_labels_1 = torch.cat([y_lb, high_conf_labels_1], dim=0)
                 
-                # Model 2: 有标签 + 高置信度无标签
                 high_conf_features_2 = image_features_ulb_w_2[p_mask_2]
                 high_conf_labels_2 = pseudo_labels_2[p_mask_2]
                 combined_features_2 = torch.cat([image_features_lb_2, high_conf_features_2], dim=0)
                 combined_labels_2 = torch.cat([y_lb, high_conf_labels_2], dim=0)
                 
-                # 4. 计算SupCon Loss
                 supcon_loss_1 = supervised_contrastive_loss(
                     combined_features_1.float(), combined_labels_1, temperature=self.supcon_temperature
                 )
